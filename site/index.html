@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vocab Together | Oxford A1-C1 + C2 tuỳ thêm</title>
+  <meta name="description" content="Học từ vựng cùng nhau với flashcard, quiz, reading và lịch sử đồng bộ.">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="toast" class="toast hidden"></div>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="#" data-view="dashboard"><span>OX</span><div><b>Vocab Together</b><small>Oxford A1-C1 · C2 tuỳ thêm</small></div></a>
+    <nav>
+      <button class="nav active" data-view="dashboard">⌂ Tổng quan</button>
+      <button class="nav" data-view="cards">▣ Flashcard</button>
+      <button class="nav" data-view="quiz">✓ Bài tập</button>
+      <button class="nav" data-view="history">↻ Lịch sử học</button>
+      <button class="nav" data-view="reading">▤ Reading</button>
+      <button class="nav admin-only hidden" data-view="admin">⚙ Admin</button>
+    </nav>
+    <section class="filters">
+      <b>Bộ lọc từ</b>
+      <label>Trình độ<select id="levelFilter"><option value="ALL">Tất cả</option><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option><option>Custom</option></select></label>
+      <label>Trạng thái<select id="statusFilter"><option value="ALL">Tất cả</option><option value="new">Chưa học</option><option value="learning">Chưa nhớ</option><option value="learned">Đã nhớ</option></select></label>
+      <input id="filterSearch" placeholder="Tìm từ...">
+    </section>
+    <section class="db-indicator">
+      <b id="syncStatus">Chưa kết nối database</b>
+      <small id="syncNote">Cấu hình Supabase để đồng bộ với bạn bè.</small>
+    </section>
+  </aside>
+
+  <main class="main">
+    <header class="header">
+      <div><h1 id="pageTitle">Tổng quan</h1><p id="pageSubtitle">Học từ cùng bạn bè và xem lại những từ chưa nhớ</p></div>
+      <div class="account">
+        <span id="userLabel" class="muted">Khách</span>
+        <button id="loginOpen" class="outline">Đăng nhập</button>
+        <button id="logoutBtn" class="outline hidden">Đăng xuất</button>
+      </div>
+    </header>
+
+    <section id="dashboard" class="page active">
+      <div class="hero">
+        <div><span class="tag inverted">OXFORD A1-C1 + C2 TUỲ THÊM</span><h2>Học cùng nhau.<br>Xem lại đúng từ chưa nhớ.</h2><p>Tiến độ đồng bộ theo tài khoản. Kho từ gồm Oxford 3000 (A1-B2) và Oxford 5000 mở rộng (B2-C1). Admin có thể tự động điền nghĩa tiếng Việt, thêm mục C2 và đăng Reading theo trình độ.</p><button class="primary" data-view="cards">Bắt đầu học</button></div>
+        <div class="circle"><strong id="dashPercent">0%</strong><small>đã nhớ</small></div>
+      </div>
+      <div class="stat-grid">
+        <article><small>Tổng từ</small><strong id="totalCount">0</strong></article>
+        <article><small>Đã nhớ</small><strong id="learnedCount">0</strong></article>
+        <article><small>Chưa nhớ</small><strong id="learningCount">0</strong></article>
+        <article><small>Chưa học</small><strong id="newCount">0</strong></article>
+      </div>
+      <div id="levelStats" class="level-stats"></div>
+      <div class="two-cols">
+        <article class="panel"><h3>Từ cần ôn hôm nay</h3><div id="reviewPreview" class="chips"></div></article>
+        <article class="panel"><h3>Hoạt động gần đây</h3><div id="recentPreview" class="activity empty">Chưa có lịch sử làm bài.</div></article>
+      </div>
+    </section>
+
+    <section id="cards" class="page">
+      <div class="section-line"><span id="deckCount" class="muted"></span><button id="shuffleBtn" class="outline">Xáo trộn</button></div>
+      <div id="flashcard" class="flashcard">
+        <div class="face front"><span id="cardLevel" class="tag"></span><h2 id="cardWord"></h2><p id="cardPos"></p><button id="speakBtn" class="soft">🔊 Phát âm</button><small>Bấm thẻ để lật</small></div>
+        <div class="face back"><span id="backLevel" class="tag"></span><h2 id="backWord"></h2><p id="cardMeaning" class="big-meaning"></p><button id="translateBtn" class="soft">Sửa / cập nhật nghĩa</button><small>Bấm thẻ để lật lại</small></div>
+      </div>
+      <div class="card-actions"><button id="notRememberBtn" class="bad">Chưa nhớ</button><button id="skipBtn" class="outline">Tiếp theo</button><button id="rememberBtn" class="good">Đã nhớ</button></div>
+    </section>
+
+    <section id="quiz" class="page">
+      <article id="quizStart" class="panel">
+        <h3>Chọn bài tập</h3>
+        <div class="mode-grid">
+          <button class="mode active" data-mode="abcd"><b>ABCD</b><small>Chọn nghĩa Việt</small></button>
+          <button class="mode" data-mode="vi-en"><b>Việt → Anh</b><small>Gõ từ English</small></button>
+          <button class="mode" data-mode="en-vi"><b>Anh → Việt</b><small>Gõ nghĩa</small></button>
+          <button class="mode" data-mode="missing"><b>Điền chữ</b><small>Hoàn thiện từ</small></button>
+        </div>
+        <div class="actions"><select id="quizSize"><option>5</option><option selected>10</option><option>20</option></select><button id="quizBegin" class="primary">Bắt đầu</button></div>
+      </article>
+      <article id="quizPlay" class="panel hidden">
+        <div class="quiz-meta"><span id="quizStep"></span><b>Điểm: <span id="quizScore">0</span></b></div>
+        <div class="prompt"><small id="promptInstruction"></small><h2 id="promptValue"></h2></div>
+        <div id="options" class="options"></div>
+        <div id="typedBox" class="answer hidden"><input id="answerInput" placeholder="Nhập câu trả lời"><button id="checkAnswer" class="primary">Kiểm tra</button></div>
+        <div id="feedback" class="feedback hidden"></div>
+        <button id="nextQuiz" class="primary hidden next">Câu tiếp</button>
+      </article>
+      <article id="quizResult" class="panel result hidden"><h2>Hoàn thành</h2><strong id="resultScore"></strong><p id="resultText"></p><button id="quizAgain" class="primary">Làm bài khác</button></article>
+    </section>
+
+    <section id="history" class="page">
+      <div class="tabs"><button class="history-tab active" data-hstatus="learning">Chưa nhớ</button><button class="history-tab" data-hstatus="learned">Đã nhớ</button><button class="history-tab" data-hstatus="new">Chưa học</button><button class="history-tab" data-hstatus="attempts">Lịch sử bài làm</button></div>
+      <article class="panel">
+        <div id="historyList" class="history-list"></div>
+      </article>
+    </section>
+
+    <section id="reading" class="page">
+      <div class="reading-layout">
+        <article class="panel passage-list"><h3>Bài reading</h3><select id="readingLevelFilter" class="reading-filter"><option value="ALL">Tất cả trình độ</option><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option><option>Mixed</option></select><div id="passageList"></div></article>
+        <article id="readingWorkspace" class="panel reading-workspace"><div class="empty">Chọn một bài reading để luyện từ trong ngữ cảnh.</div></article>
+      </div>
+    </section>
+
+    <section id="admin" class="page">
+      <div class="admin-note"><b>Admin Studio</b><span>Thêm dữ liệu ở đây sẽ xuất hiện cho người học đang online qua Supabase Realtime.</span></div>
+      <div class="admin-grid">
+        <article class="panel admin-tools">
+          <h3>Kho từ &amp; nghĩa tiếng Việt</h3>
+          <p>Nạp/cập nhật <b>5.323 mục từ học</b> từ Oxford 3000 và Oxford 5000. Từ trùng hoàn toàn đã được loại bỏ; từ khác loại hoặc khác cấp độ vẫn được giữ để học đúng nghĩa.</p>
+          <button id="seedVocabBtn" class="primary block-action">Nhập/cập nhật kho Oxford đầy đủ</button>
+          <div id="seedProgress" class="muted task-progress"></div>
+          <button id="translateMissingBtn" class="outline block-action">Tự động điền nghĩa còn thiếu</button>
+          <div id="translateProgress" class="muted task-progress"></div>
+          <small class="helper">Nghĩa tự động có thể chưa sát ngữ cảnh; bạn vẫn có thể sửa từng từ.</small>
+        </article>
+        <article class="panel">
+          <h3>Thêm một từ</h3>
+          <form id="addWordForm" class="form">
+            <input name="word" placeholder="Từ tiếng Anh" required>
+            <input name="meaning_vi" placeholder="Nghĩa tiếng Việt (để trống = tự dịch)">
+            <div class="input-row"><input name="pos" placeholder="Từ loại, vd: n."><select name="level"><option>A1</option><option>A2</option><option>B1</option><option selected>B2</option><option>C1</option><option>C2</option><option>Custom</option></select></div>
+            <input name="hint" placeholder="Ghi chú/ngữ cảnh">
+            <button class="primary">Lưu từ</button>
+          </form>
+        </article>
+        <article class="panel wide">
+          <h3>Upload từ vựng CSV / dán nhiều dòng</h3>
+          <p>Định dạng: <code>word,meaning_vi,pos,level,hint</code>. Có thể để trống <code>meaning_vi</code>, hệ thống sẽ tự dịch trước khi lưu.</p>
+          <textarea id="bulkWords" rows="7" placeholder="hello,,exclam.,A1,&#10;library,,n.,A2,&#10;journey,,n.,B1,&#10;sustainable,bền vững,adj.,B2,"></textarea>
+          <div class="actions"><input id="csvFile" type="file" accept=".csv,.txt"><button id="uploadWordsBtn" class="primary">Dịch &amp; upload lên database</button></div>
+        </article>
+        <article class="panel wide">
+          <h3>Tạo bài Reading</h3>
+          <form id="readingForm" class="form">
+            <input name="title" placeholder="Tiêu đề bài đọc" required>
+            <select name="level"><option>A1</option><option>A2</option><option>B1</option><option selected>B2</option><option>C1</option><option>C2</option><option>Mixed</option></select>
+            <textarea name="content" rows="8" placeholder="Nội dung bài đọc..." required></textarea>
+            <textarea name="questions" rows="7" placeholder='Câu hỏi JSON, ví dụ: [{"question":"What is the main idea?","options":["A","B","C","D"],"answer":0}]' required></textarea>
+            <button class="primary">Đăng bài reading</button>
+          </form>
+        </article>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="authModal" class="modal hidden"><div class="dialog">
+  <button id="authClose" class="close">×</button>
+  <h2>Đăng nhập để đồng bộ</h2>
+  <p>Hai bạn đăng ký tài khoản riêng để lưu tiến độ riêng trên cùng website.</p>
+  <form id="authForm" class="form"><input name="email" type="email" placeholder="Email" required><input name="password" type="password" minlength="6" placeholder="Mật khẩu" required><div class="actions"><button name="action" value="login" class="primary">Đăng nhập</button><button name="action" value="signup" class="outline">Đăng ký</button></div></form>
+  <div id="authMessage" class="muted"></div>
+</div></div>
+
+<div id="meaningModal" class="modal hidden"><div class="dialog">
+  <button id="meaningClose" class="close">×</button>
+  <h2 id="meaningTitle">Nghĩa tiếng Việt</h2>
+  <input id="meaningEdit" placeholder="Nhập nghĩa tiếng Việt">
+  <div class="actions"><button id="autoTranslate" class="outline">Dịch tự động</button><button id="meaningSave" class="primary">Lưu</button></div>
+  <small class="muted">Admin lưu nghĩa chung vào database; học viên lưu ghi chú nghĩa trên trình duyệt của mình.</small>
+</div></div>
+
+<script src="/config.js"></script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

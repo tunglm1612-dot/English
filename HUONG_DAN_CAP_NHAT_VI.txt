@@ -1,0 +1,36 @@
+HƯỚNG DẪN CẬP NHẬT WEBSITE VOCAB TOGETHER - BẢN ĐẦY ĐỦ
+
+Bản này đã tích hợp:
+- The Oxford 3000: A1 - B2.
+- The Oxford 5000 (danh sách bổ sung): B2 - C1.
+- Tổng cộng: 5,323 mục học.
+- A1: 900 | A2: 872 | B1: 809 | B2: 1,427 | C1: 1,315.
+- Sửa bài Điền chữ: có nghĩa tiếng Việt, cấp độ và từ loại.
+- Sửa Reading: nộp bài hiện điểm, đáp án đúng/sai và làm lại.
+- Tự động tải và lưu nghĩa tiếng Việt bằng nút trong Admin.
+
+VÌ SAO CÓ 5.323 MỤC HỌC, KHÔNG PHẢI ĐÚNG 5.000?
+Oxford có một số từ được ghi ở nhiều từ loại hoặc nhiều cấp độ. Website giữ các mục đó riêng để học chính xác. Mục trùng hoàn toàn đã được loại.
+
+CÁCH CẬP NHẬT WEB HIỆN TẠI
+1. Không xoá website Netlify cũ.
+2. Giải nén file ZIP này.
+3. Copy nội dung bản này đè vào thư mục repository GitHub đang dùng.
+4. QUAN TRỌNG: giữ lại file site\config.js hiện tại của bạn vì trong đó có URL và Publishable key Supabase. File config.js trong ZIP là bản placeholder an toàn.
+5. Mở PowerShell tại thư mục repository và chạy:
+   git add .
+   git commit -m "Add full Oxford 3000 and 5000 vocabulary with exercise fixes"
+   git push origin main
+6. Chờ Netlify báo Published, mở website và bấm Ctrl + F5.
+
+SAU KHI WEBSITE ĐÃ CẬP NHẬT
+1. Đăng nhập tài khoản Admin.
+2. Vào Admin.
+3. Bấm "Nhập/cập nhật kho Oxford đầy đủ".
+   - Bước này thêm A1, A2, B1 mới.
+   - Các mục Oxford 5000 đã có từ bản cũ dùng khoá cũ, nên không bị nhân đôi.
+4. Bấm "Tự động điền nghĩa còn thiếu".
+   - Website sẽ dịch và lưu nghĩa vào Supabase để bạn bè cũng nhìn thấy.
+   - Với hàng nghìn từ, cần giữ tab mở. Nếu bị gián đoạn, bấm lại để tiếp tục phần còn thiếu.
+
+KHÔNG CẦN CHẠY LẠI schema.sql nếu database hiện tại của bạn đã hoạt động.
