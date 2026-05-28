@@ -7,6 +7,9 @@ const readyForCloud = config.SUPABASE_URL && config.SUPABASE_ANON_KEY &&
   !config.SUPABASE_URL.includes("PASTE_") && !config.SUPABASE_ANON_KEY.includes("PASTE_");
 const db = readyForCloud ? createClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY) : null;
 const DISPLAY_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2", "Custom"];
+const DB_PAGE_SIZE = 1000;
+const TRANSLATE_BATCH_SIZE = 8;
+let vocabularyRealtimeTimer = null;
 
 const state = {
   seed: [], words: [], filtered: [], progress: {}, attempts: [], passages: [],
@@ -15,7 +18,8 @@ const state = {
   deck: [], cardIndex: 0, historyTab: "learning",
   quizMode: "abcd", quiz: [], quizIndex: 0, score: 0, answered: false,
   activePassage: null, readingAnswers: {}, readingResult: null, readingSubmitting: false,
-  meaningLoading: new Set(), meaningAttempted: new Set(), adminTranslating: false
+  meaningLoading: new Set(), meaningAttempted: new Set(), adminTranslating: false,
+  bulkUpdating: false
 };
 
 function loadLocal(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } }
@@ -77,11 +81,27 @@ async function loadProfile() {
 }
 
 async function loadVocabulary() {
-  const { data, error } = await db.from("vocabulary").select("*").order("word", { ascending:true });
-  if (error) { toast("Không đọc được kho từ: " + error.message); state.words = state.seed; return; }
-  state.dbHasWords = data.length > 0;
-  state.words = data.length ? data : state.seed.map(w => ({...w, entry_key:`oxford_${w.id}`, meaning_vi:"", isSeed:true}));
-  if (!data.length && state.isAdmin) toast("Database chưa có từ. Vào Admin để nhập bộ Oxford.");
+  // Supabase mặc định chỉ trả tối đa 1.000 dòng mỗi truy vấn.
+  // Lấy tuần tự từng trang để dashboard luôn hiển thị đủ kho từ.
+  const allRows = [];
+  for (let start = 0; ; start += DB_PAGE_SIZE) {
+    const { data, error } = await db.from("vocabulary")
+      .select("*")
+      .order("word", { ascending:true })
+      .order("entry_key", { ascending:true })
+      .range(start, start + DB_PAGE_SIZE - 1);
+    if (error) {
+      toast("Không đọc được kho từ: " + error.message);
+      state.words = state.seed;
+      state.dbHasWords = false;
+      return;
+    }
+    allRows.push(...(data || []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  state.dbHasWords = allRows.length > 0;
+  state.words = allRows.length ? allRows : state.seed.map(w => ({...w, entry_key:`oxford_${w.id}`, meaning_vi:"", isSeed:true}));
+  if (!allRows.length && state.isAdmin) toast("Database chưa có từ. Vào Admin để nhập bộ Oxford.");
 }
 
 async function loadProgress() {
@@ -102,9 +122,20 @@ async function loadPassages() {
   state.passages = data || [];
 }
 
+function queueVocabularyRealtimeRefresh() {
+  // Trong lúc nhập/dịch hàng nghìn dòng, không tải lại kho từ sau mỗi dòng.
+  // Khi thao tác kết thúc, hàm admin sẽ tải lại đúng một lần.
+  if (state.bulkUpdating) return;
+  clearTimeout(vocabularyRealtimeTimer);
+  vocabularyRealtimeTimer = setTimeout(async () => {
+    await loadVocabulary();
+    applyFilters();
+    toast("Kho từ vừa được cập nhật.");
+  }, 700);
+}
 function subscribeRealtime() {
   db.channel("classroom-live")
-    .on("postgres_changes", {event:"*", schema:"public", table:"vocabulary"}, async () => { await loadVocabulary(); applyFilters(); renderAll(); toast("Kho từ vừa được cập nhật."); })
+    .on("postgres_changes", {event:"*", schema:"public", table:"vocabulary"}, queueVocabularyRealtimeRefresh)
     .on("postgres_changes", {event:"*", schema:"public", table:"reading_passages"}, async () => { await loadPassages(); renderReading(); toast("Có bài reading mới."); })
     .subscribe();
 }
@@ -438,59 +469,81 @@ function openMeaning() {
 }
 
 async function seedVocabulary() {
-  if(!state.isAdmin) return;
+  if(!state.isAdmin || state.bulkUpdating) return;
   $("seedVocabBtn").disabled=true;
+  state.bulkUpdating=true;
   const rows=state.seed.map(w=>({entry_key:`oxford_${w.id}`,word:w.word,meaning_vi:null,pos:w.pos,level:w.level,hint:w.hint||"",source:w.source || "Oxford 3000 + Oxford 5000"}));
-  for(let i=0;i<rows.length;i+=200) {
-    const { error }=await db.from("vocabulary").upsert(rows.slice(i,i+200),{onConflict:"entry_key",ignoreDuplicates:true});
-    if(error){ $("seedVocabBtn").disabled=false; return toast("Lỗi nhập: "+error.message); }
-    $("seedProgress").textContent=`Đã nhập ${Math.min(i+200,rows.length)}/${rows.length} mục từ…`;
+  try {
+    for(let i=0;i<rows.length;i+=200) {
+      const { error }=await db.from("vocabulary").upsert(rows.slice(i,i+200),{onConflict:"entry_key",ignoreDuplicates:true});
+      if(error) throw error;
+      $("seedProgress").textContent=`Đã nhập ${Math.min(i+200,rows.length)}/${rows.length} mục từ…`;
+    }
+    await loadVocabulary();
+    applyFilters();
+    $("seedProgress").textContent=`Đã nhập/cập nhật xong ${state.words.length.toLocaleString("vi-VN")} mục từ; bấm Tự động điền nghĩa còn thiếu để lưu nghĩa tiếng Việt.`;
+    toast("Kho từ đã được cập nhật đầy đủ.");
+  } catch(error) {
+    toast("Lỗi nhập: " + (error.message || "Không xác định"));
+  } finally {
+    state.bulkUpdating=false;
+    $("seedVocabBtn").disabled=false;
   }
-  $("seedVocabBtn").disabled=false;
-  await loadVocabulary(); applyFilters(); $("seedProgress").textContent="Đã nhập/cập nhật xong kho Oxford; bấm Tự động điền nghĩa còn thiếu để lưu nghĩa tiếng Việt."; toast("Kho từ đã có trên database.");
 }
 async function autoTranslateRows(rows, progressEl=null) {
   const missing = rows.filter(row=>!String(row.meaning_vi || "").trim());
   if (!missing.length) return 0;
   let filled=0;
-  for(let i=0;i<missing.length;i+=20) {
-    const batch=missing.slice(i,i+20);
+  for(let i=0;i<missing.length;i+=TRANSLATE_BATCH_SIZE) {
+    const batch=missing.slice(i,i+TRANSLATE_BATCH_SIZE);
     try {
       const results=await requestTranslations(batch);
       const resultMap=new Map(results.filter(r=>r.vi).map(r=>[String(r.id), r.vi]));
       batch.forEach(row=>{ const vi=resultMap.get(String(row.id || row.entry_key)); if(vi){ row.meaning_vi=vi; filled++; }});
     } catch(error) { toast("Dịch tự động bị gián đoạn: " + (error.message || "Lỗi")); break; }
-    if(progressEl) progressEl.textContent=`Đã dịch ${Math.min(i+20,missing.length)}/${missing.length} từ đang thiếu nghĩa…`;
+    if(progressEl) progressEl.textContent=`Đã dịch ${Math.min(i+TRANSLATE_BATCH_SIZE,missing.length)}/${missing.length} từ đang thiếu nghĩa…`;
   }
   return filled;
 }
 async function translateMissingVocabulary() {
-  if(!state.isAdmin || !state.dbHasWords || state.adminTranslating) return toast("Hãy nhập kho từ vào database trước.");
+  if(!state.isAdmin || !state.dbHasWords) return toast("Hãy nhập kho từ vào database trước.");
+  if(state.adminTranslating || state.bulkUpdating) return;
   const missing=state.words.filter(w=>!String(w.meaning_vi || "").trim() && !w.isSeed);
   if(!missing.length) return toast("Tất cả từ đã có nghĩa tiếng Việt.");
   const button=$("translateMissingBtn"), progress=$("translateProgress");
-  state.adminTranslating=true; button.disabled=true; button.textContent="Đang tự động dịch…";
+  state.adminTranslating=true;
+  state.bulkUpdating=true;
+  button.disabled=true;
+  button.textContent="Đang tự động dịch…";
   let saved=0, failed=0;
-  for(let i=0;i<missing.length;i+=20) {
-    const batch=missing.slice(i,i+20);
-    let results=[];
-    try { results=await requestTranslations(batch); } catch { failed+=batch.length; }
-    const resultMap=new Map(results.filter(r=>r.vi).map(r=>[String(r.id),r.vi]));
-    const translated=batch.filter(w=>resultMap.has(String(w.id))).map(w=>cloudWordPayload(w,resultMap.get(String(w.id))));
-    failed += batch.length-translated.length;
-    if(translated.length) {
-      const {error}=await db.from("vocabulary").upsert(translated,{onConflict:"id"});
-      if(error) failed+=translated.length;
-      else {
-        saved+=translated.length;
-        translated.forEach(row=>{ const target=wordById(row.id); if(target) target.meaning_vi=row.meaning_vi; });
+  try {
+    for(let i=0;i<missing.length;i+=TRANSLATE_BATCH_SIZE) {
+      const batch=missing.slice(i,i+TRANSLATE_BATCH_SIZE);
+      let results=[];
+      try { results=await requestTranslations(batch); } catch { failed+=batch.length; }
+      const resultMap=new Map(results.filter(r=>r.vi).map(r=>[String(r.id),r.vi]));
+      const translated=batch.filter(w=>resultMap.has(String(w.id))).map(w=>cloudWordPayload(w,resultMap.get(String(w.id))));
+      failed += batch.length-translated.length;
+      if(translated.length) {
+        const {error}=await db.from("vocabulary").upsert(translated,{onConflict:"id"});
+        if(error) failed+=translated.length;
+        else {
+          saved+=translated.length;
+          translated.forEach(row=>{ const target=wordById(row.id); if(target) target.meaning_vi=row.meaning_vi; });
+        }
       }
+      progress.textContent=`Đã lưu nghĩa ${saved}/${missing.length} từ. Chưa lưu: ${missing.length-saved}${failed ? ` · Lỗi tạm thời: ${failed}` : ""}`;
+      if (i + TRANSLATE_BATCH_SIZE < missing.length) await new Promise(resolve => setTimeout(resolve, 220));
     }
-    progress.textContent=`Đã lưu nghĩa ${saved}/${missing.length} từ. Còn lại: ${missing.length-saved-failed}${failed ? ` · Lỗi: ${failed}` : ""}`;
+  } finally {
+    state.adminTranslating=false;
+    state.bulkUpdating=false;
+    button.disabled=false;
+    button.textContent="Tự động điền nghĩa còn thiếu";
+    await loadVocabulary();
+    applyFilters();
   }
-  state.adminTranslating=false; button.disabled=false; button.textContent="Tự động điền nghĩa còn thiếu";
-  await loadVocabulary(); applyFilters();
-  toast(failed ? `Đã lưu ${saved} nghĩa. Bấm lại để thử các từ còn thiếu.` : `Đã tự động lưu nghĩa cho ${saved} từ.`);
+  toast(failed ? `Đã lưu ${saved} nghĩa. Bấm lại để thử lại những từ còn thiếu.` : `Đã tự động lưu nghĩa cho ${saved} từ.`);
 }
 async function addWord(event) {
   event.preventDefault(); const button=event.submitter; const data=Object.fromEntries(new FormData(event.currentTarget).entries());
