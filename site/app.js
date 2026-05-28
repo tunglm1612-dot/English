@@ -9,6 +9,7 @@ const db = readyForCloud ? createClient(config.SUPABASE_URL, config.SUPABASE_ANO
 const DISPLAY_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2", "Custom"];
 const DB_PAGE_SIZE = 1000;
 const TRANSLATE_BATCH_SIZE = 8;
+const ORIGINAL_SET_FILTER = "OXFORD_5000_ORIGINAL";
 let vocabularyRealtimeTimer = null;
 
 const state = {
@@ -19,7 +20,9 @@ const state = {
   quizMode: "abcd", quiz: [], quizIndex: 0, score: 0, answered: false,
   activePassage: null, readingAnswers: {}, readingResult: null, readingSubmitting: false,
   meaningLoading: new Set(), meaningAttempted: new Set(), adminTranslating: false,
-  bulkUpdating: false
+  bulkUpdating: false, savingCardStatus: false,
+  pendingProgress: loadLocal("oxford_pending_progress", {}),
+  syncingProgress: false
 };
 
 function loadLocal(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } }
@@ -34,6 +37,48 @@ function displayWord(word) { return `${escapeHtml(word.word)}${word.hint ? ` <sm
 function translationQuery(word) { return word.hint ? `${word.word} (${word.hint})` : word.word; }
 function today(value) { return value ? new Date(value).toLocaleDateString("vi-VN") : "—"; }
 function levelClass(level) { return `level-${String(level || "custom").toLowerCase().replace(/[^a-z0-9]/g, "")}`; }
+function isOriginalOxford5000(word) {
+  const entryKey = String(word?.entry_key || "");
+  return /^oxford_w\d+$/i.test(entryKey) ||
+    (/^w\d+$/i.test(String(word?.id || "")) && ["B2", "C1"].includes(word?.level));
+}
+function matchesCurrentFilters(word) {
+  const level = $("levelFilter").value;
+  const status = $("statusFilter").value;
+  const search = normalize($("filterSearch").value);
+  const levelMatch = level === "ALL" ||
+    (level === ORIGINAL_SET_FILTER ? isOriginalOxford5000(word) : word.level === level);
+  return levelMatch &&
+    (status === "ALL" || statusOf(word) === status) &&
+    (!search || normalize(`${word.word} ${meaning(word)}`).includes(search));
+}
+function pendingKey(row) { return `${row.user_id}:${row.vocab_id}`; }
+async function flushPendingProgress() {
+  if (state.syncingProgress || !db || !state.session || !state.dbHasWords) return;
+  state.syncingProgress = true;
+  let failedMessage = "";
+  try {
+    while (true) {
+      const entry = Object.entries(state.pendingProgress)
+        .find(([_key, row]) => row.user_id === state.session.user.id);
+      if (!entry) break;
+      const [key, row] = entry;
+      const { error } = await db.from("user_progress").upsert(row, {onConflict:"user_id,vocab_id"});
+      if (error) { failedMessage = error.message || "Không thể lưu tiến độ."; break; }
+      // Nếu người học vừa đánh dấu lại đúng từ đó trong lúc đang lưu, giữ bản mới để lưu lượt tiếp.
+      if (state.pendingProgress[key] === row) delete state.pendingProgress[key];
+      saveLocal("oxford_pending_progress", state.pendingProgress);
+    }
+  } finally {
+    state.syncingProgress = false;
+  }
+  if (failedMessage) toast("Chưa đồng bộ được tiến độ, web sẽ thử lại: " + failedMessage);
+}
+function queueProgressSync(row) {
+  state.pendingProgress[pendingKey(row)] = row;
+  saveLocal("oxford_pending_progress", state.pendingProgress);
+  void flushPendingProgress();
+}
 function cloudWordPayload(word, vi) {
   return {id:word.id, entry_key:word.entry_key, word:word.word, meaning_vi:vi, pos:word.pos || "", level:word.level || "Custom", hint:word.hint || "", source:word.source || "Admin"};
 }
@@ -106,8 +151,27 @@ async function loadVocabulary() {
 
 async function loadProgress() {
   if (!state.session || !state.dbHasWords) { state.progress = loadLocal("oxford_local_progress", {}); return; }
-  const { data } = await db.from("user_progress").select("*").eq("user_id", state.session.user.id);
-  state.progress = Object.fromEntries((data || []).map(row => [row.vocab_id, row]));
+  // Lấy đầy đủ tiến độ theo từng trang; tránh mất mục Đã nhớ/Chưa nhớ khi dữ liệu nhiều.
+  const allRows = [];
+  for (let start = 0; ; start += DB_PAGE_SIZE) {
+    const { data, error } = await db.from("user_progress")
+      .select("*")
+      .eq("user_id", state.session.user.id)
+      .order("last_reviewed_at", { ascending:false, nullsFirst:false })
+      .range(start, start + DB_PAGE_SIZE - 1);
+    if (error) {
+      toast("Không đọc được lịch sử học: " + error.message);
+      return;
+    }
+    allRows.push(...(data || []));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+  }
+  state.progress = Object.fromEntries(allRows.map(row => [row.vocab_id, row]));
+  // Các lượt bấm chưa đồng bộ xong vẫn hiện trong lịch sử, và sẽ được tự thử lưu lại.
+  Object.values(state.pendingProgress)
+    .filter(row => row.user_id === state.session.user.id)
+    .forEach(row => { state.progress[row.vocab_id] = row; });
+  void flushPendingProgress();
 }
 
 async function loadAttempts() {
@@ -150,12 +214,7 @@ function updateAccountUI() {
 }
 
 function applyFilters() {
-  const level = $("levelFilter").value;
-  const status = $("statusFilter").value;
-  const search = normalize($("filterSearch").value);
-  state.filtered = state.words.filter(w => (level==="ALL" || w.level===level) &&
-    (status==="ALL" || statusOf(w)===status) &&
-    (!search || normalize(`${w.word} ${meaning(w)}`).includes(search)));
+  state.filtered = state.words.filter(matchesCurrentFilters);
   state.deck = shuffle(state.filtered.length ? state.filtered : state.words);
   state.cardIndex = 0;
   renderAll();
@@ -173,7 +232,9 @@ function renderDashboard() {
   $("newCount").textContent = fresh.toLocaleString("vi-VN");
   $("dashPercent").textContent = total ? `${Math.round(learned/total*100)}%` : "0%";
   const levelCounts = DISPLAY_LEVELS.map(level => ({level, count:state.words.filter(w => (w.level || "Custom") === level).length})).filter(item => item.count);
-  $("levelStats").innerHTML = levelCounts.map(item => `<button class="level-pill ${levelClass(item.level)}" data-level-shortcut="${item.level}"><b>${item.level}</b><span>${item.count.toLocaleString("vi-VN")} từ</span></button>`).join("");
+  const originalCount = state.words.filter(isOriginalOxford5000).length;
+  $("levelStats").innerHTML = levelCounts.map(item => `<button class="level-pill ${levelClass(item.level)}" data-level-shortcut="${item.level}"><b>${item.level}</b><span>${item.count.toLocaleString("vi-VN")} từ</span></button>`).join("") +
+    (originalCount ? `<button class="level-pill" data-level-shortcut="${ORIGINAL_SET_FILTER}"><b>Bộ cũ B2–C1</b><span>${originalCount.toLocaleString("vi-VN")} từ</span></button>` : "");
   qsa("[data-level-shortcut]").forEach(button => button.onclick=()=>{$("levelFilter").value=button.dataset.levelShortcut; applyFilters(); goto("cards");});
   const review = state.words.filter(w=>statusOf(w)==="learning").slice(0,10);
   $("reviewPreview").innerHTML = review.length ? review.map(w=>`<span class="chip">${escapeHtml(w.word)}</span>`).join("") : '<span class="muted">Chưa có từ cần ôn.</span>';
@@ -192,7 +253,7 @@ function renderCard() {
   $("backLevel").className = `tag ${levelClass(w.level)}`;
   $("cardWord").innerHTML = displayWord(w);
   $("backWord").innerHTML = displayWord(w);
-  $("cardPos").textContent = w.pos || "";
+  $("cardPos").textContent = [w.pos || "", isOriginalOxford5000(w) ? "Bộ Oxford 5000 cũ" : ""].filter(Boolean).join(" · ");
   $("cardMeaning").textContent = meaning(w) || (state.meaningLoading.has(w.id) ? "Đang tải nghĩa…" : "Đang tự động tải nghĩa…");
   $("deckCount").textContent = `${state.cardIndex+1} / ${state.deck.length} · ${statusLabel(statusOf(w))}`;
   if (!meaning(w) && !state.meaningAttempted.has(w.id)) loadMeaningForCard(w);
@@ -201,30 +262,40 @@ function statusLabel(s){ return ({learned:"Đã nhớ",learning:"Chưa nhớ",ne
 function wordById(id){ return state.words.find(w=>w.id===id); }
 
 async function setStatus(word, status, exerciseType="flashcard", correct=null) {
-  const existing = state.progress[word.id] || {};
-  state.progress[word.id] = {...existing, status, last_reviewed_at:new Date().toISOString()};
+  const previous = state.progress[word.id] ? {...state.progress[word.id]} : null;
+  const existing = previous || {};
+  const reviewedAt = new Date().toISOString();
+  state.progress[word.id] = {...existing, status, last_reviewed_at:reviewedAt};
+
   if (state.session && state.dbHasWords && !word.isSeed) {
     const row = {
       user_id: state.session.user.id, vocab_id: word.id, status,
       seen_count: (existing.seen_count || 0) + 1,
       correct_count: (existing.correct_count || 0) + (correct===true ? 1 : 0),
       wrong_count: (existing.wrong_count || 0) + (correct===false ? 1 : 0),
-      last_reviewed_at: new Date().toISOString()
+      last_reviewed_at: reviewedAt
     };
     const { error } = await db.from("user_progress").upsert(row, {onConflict:"user_id,vocab_id"});
-    if (error) toast("Không lưu được tiến độ: " + error.message);
+    if (error) {
+      if (previous) state.progress[word.id] = previous; else delete state.progress[word.id];
+      renderAll();
+      toast("Không lưu được tiến độ: " + error.message);
+      return false;
+    }
+    // Flashcard không sinh bản ghi bài làm, nên không tải lại lịch sử bài tập làm nút bị chậm.
     if (correct !== null) {
       await db.from("attempts").insert({user_id:state.session.user.id, vocab_id:word.id, exercise_type:exerciseType, is_correct:correct});
+      await loadAttempts();
     }
-    await loadAttempts();
   } else {
     saveLocal("oxford_local_progress", state.progress);
     if (correct !== null) {
-      state.attempts.unshift({vocab_id:word.id, exercise_type:exerciseType, is_correct:correct, created_at:new Date().toISOString()});
+      state.attempts.unshift({vocab_id:word.id, exercise_type:exerciseType, is_correct:correct, created_at:reviewedAt});
       saveLocal("oxford_local_attempts", state.attempts.slice(0,100));
     }
   }
   renderAll();
+  return true;
 }
 
 async function requestTranslations(list) {
@@ -582,8 +653,50 @@ qsa("[data-view]").forEach(el=>el.onclick=e=>{e.preventDefault(); const v=el.dat
 $("flashcard").onclick=e=>{if(!e.target.closest("button")) $("flashcard").classList.toggle("flipped");};
 $("shuffleBtn").onclick=()=>{state.deck=shuffle(state.filtered.length?state.filtered:state.words);state.cardIndex=0;renderCard();};
 $("skipBtn").onclick=()=>{state.cardIndex=(state.cardIndex+1)%state.deck.length;renderCard();};
-$("rememberBtn").onclick=async()=>{await setStatus(currentWord(),"learned"); $("skipBtn").click();};
-$("notRememberBtn").onclick=async()=>{await setStatus(currentWord(),"learning"); $("skipBtn").click();};
+function markCurrentCard(status) {
+  const word = currentWord();
+  if (!word) return;
+  const previous = state.progress[word.id] || {};
+  const reviewedAt = new Date().toISOString();
+  const updated = {
+    ...previous,
+    status,
+    last_reviewed_at: reviewedAt,
+    seen_count: (previous.seen_count || 0) + 1,
+    correct_count: previous.correct_count || 0,
+    wrong_count: previous.wrong_count || 0
+  };
+  state.progress[word.id] = updated;
+
+  if (state.session && state.dbHasWords && !word.isSeed) {
+    queueProgressSync({
+      user_id: state.session.user.id,
+      vocab_id: word.id,
+      status,
+      seen_count: updated.seen_count,
+      correct_count: updated.correct_count,
+      wrong_count: updated.wrong_count,
+      last_reviewed_at: reviewedAt
+    });
+  } else {
+    saveLocal("oxford_local_progress", state.progress);
+  }
+
+  // Chuyển thẻ ngay sau một lần bấm; đồng bộ Supabase chạy nền, không buộc bạn bấm “Tiếp theo”.
+  if ($("statusFilter").value !== "ALL" && $("statusFilter").value !== status) {
+    state.filtered = state.words.filter(matchesCurrentFilters);
+    state.deck = state.deck.filter(item => item.id !== word.id && matchesCurrentFilters(item));
+    if (!state.deck.length && state.filtered.length) state.deck = shuffle(state.filtered);
+    state.cardIndex = state.deck.length ? state.cardIndex % state.deck.length : 0;
+  } else {
+    state.cardIndex = state.deck.length ? (state.cardIndex + 1) % state.deck.length : 0;
+  }
+  renderDashboard();
+  renderHistory();
+  renderCard();
+}
+$("rememberBtn").onclick=()=>markCurrentCard("learned");
+$("notRememberBtn").onclick=()=>markCurrentCard("learning");
 $("speakBtn").onclick=()=>{const u=new SpeechSynthesisUtterance(currentWord().word);u.lang="en-US";speechSynthesis.speak(u);};
 $("translateBtn").onclick=openMeaning; $("meaningClose").onclick=()=>$("meaningModal").classList.add("hidden"); $("meaningSave").onclick=saveMeaning; $("autoTranslate").onclick=autoTranslateCurrent;
 qsa(".mode").forEach(b=>b.onclick=()=>selectQuizMode(b.dataset.mode)); $("quizBegin").onclick=beginQuiz; $("checkAnswer").onclick=submitTyped; $("answerInput").onkeydown=e=>{if(e.key==="Enter")submitTyped();}; $("nextQuiz").onclick=nextQuizQuestion; $("quizAgain").onclick=()=>{$("quizResult").classList.add("hidden");$("quizStart").classList.remove("hidden");};
